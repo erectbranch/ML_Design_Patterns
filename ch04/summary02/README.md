@@ -276,3 +276,104 @@ ML dataset은 종종 terabyte가 넘어가는 데다 training 과정도 굉장�
 - parameter server 역할을 맡는 system, worker 역할을 맡는 system이 나뉘게 된다.
 
 ---
+
+### 4.5.4 Task parallelism
+
+하지만 싱경망이 너무 크다면 한 device의 memory에 다 넣을 수 없는 경우가 있다. 이런 공간의 제약을 극복하려면 다른 방식의 parallelism을 사용해야 한다.
+
+우선 사전 지식으로 data가 아니라 program **task**에 의해 parallelism이 결정되는 **task parallelism**(TP)를 알아보자. 아래 코드 예시를 보자.
+
+```python
+for i in range(3):
+  b[i] = f(a[i])
+  c[i] = g(b[i])
+```
+
+예시에서는 for loop 내부에서 f(), g()라는 서로 다른 function을 차례로 수행하고 있다.
+
+- g()는 f(a)의 결과를 input으로 받아 output을 산출한다.(**dependency**가 존재)
+
+이를 pipelining 패턴으로 parallelize할 수 있다.
+
+```c
+thread[0]:b[0] = f(a[0]) | b[1] = f(a[1]) | b[2] = f(a[2]) |
+thread[1]:               | c[0] = g(b[0]) | c[1] = g(b[1]) | c[2] = g(b[2])
+```
+
+dependency를 갖기 때문에 data parallelism과 다르게 동시에 연산할 수 있는 thread 수에는 한계가 있다.(overhead가 발생하며 scalability 제약이 있다.)
+
+---
+
+### 4.5.5 Model parallelism
+
+모든 parallelism은 data parallelism과 task parallelism의 조합으로 구성되며 **model parallelism**도 그 중 하나이다.
+
+![model parallelism](images/model_parallelism.png)
+
+- training 중 각 device는 input으로 동일한 mini batch data를 사용하지만, model의 개별 구성 요소와 관련된 연산만 수행한다.
+
+model parallelism은 fully-connected layer가 많은 큰 규모의 model에서 효율이 높고 전체 계산 시간을 크게 줄일 수 있다.(latency가 크게 감소)
+
+- model parallelism은 worker 사이에 'neuron의 값이 서로 오고간다.'
+
+- data parallelism은 worker 사이에 'weight 및 gradient가 서로 오고간다.'
+
+> 이 둘을 결합해야 하는 경우도 있다. 예를 들어 **Mesh TensorFlow**는 synchronous parallelism과 model parallelism을 결합하는, distibuted training에 최적화된 library이다.
+
+아래 matrix multiplication(행렬 곱셈) 예제를 보며 model parallelism을 이해해보자.
+
+> python에서 행렬 곱은 \@ 기호를 사용한다.
+
+```python
+y[0:3][0:3] = x[0:3][0:3] @ w[0:3][0:3]
+```
+
+- x: input matrix, y: output matrix
+
+- w: weight matrix
+
+이러한 matrix multiplication task는 더 작은 matrix multiplication로 쪼갤 수 있다.
+
+1. data parallelism
+
+data parallelism 관점에서 parallelize할 주된 data는 input에 해당되는 `x`이다. 
+
+모든 thread가 weight matrix인 `w`를 기본으로 갖고, `x`의 row를 thread에 분배하는 방식으로 parallelism을 구현할 수 있다.(결과로 `y`의 각 row를 얻게 된다.)
+
+> 이렇게 row 단위로 나누고 합치는 과정이 hardware 관점에서 더 자연스럽고 효율적이다.
+
+```python
+# row-wise
+thread[0]: y[0][0:3] = x[0][0:3] @ w[0:3][0:3]
+thread[1]: y[1][0:3] = x[1][0:3] @ w[0:3][0:3]
+thread[2]: y[2][0:3] = x[2][0:3] @ w[0:3][0:3]
+thread[3]: y[3][0:3] = x[3][0:3] @ w[0:3][0:3]
+```
+
+하지만 이 경우 다음과 같은 문제가 생길 수 있다.
+
+- 모든 thread가 `w`를 가지면서 memory를 많이 차지하게 되는데, <U>model size가 한 thread에서 감당할 수 없을 정도로 크다면 parallelism이 불가능</U>하다.
+
+2. model parallelism
+
+model parallelism 관점에서 parallelize할 주된 data는 parameter(weight)에 해당되는 `w`이다.
+
+이 경우 동일한 input matrix `x`에 weight matrix `w`를 나눠서 분배한다. 하지만 column-wise 분배이기 때문에, 결과를 합치는 과정에서 memory cost가 더 발생하게 된다.
+
+```python
+# column-wise
+thread[0]: y[0:3][0] = x[0:3][0:3] @ w[0:3][0]
+thread[1]: y[0:3][1] = x[0:3][0:3] @ w[0:3][1]
+thread[2]: y[0:3][2] = x[0:3][0:3] @ w[0:3][2]
+thread[3]: y[0:3][3] = x[0:3][0:3] @ w[0:3][3]
+```
+
+이런 model parallelism의 특성 때문에 <U>model size가 커지면 커질수록 parallelism도 더 커진다.</U> 
+
+또한 처리하는 input data가 많아지더라도 (모든 device에 같은 input을 전달해 주기 때문에) parallelism 자체는 변함이 없다.(늘려서 해결할 수 없다.)
+
+> 이러한 특징이 task parallelism과 일맥상통하는 측면이다.
+
+> data parallelism과 같이 scalability를 높일 수는 없다는 점은 비효율적이지만, parameter가 엄청나게 많은 model을 GPU memory에 나눠서 올릴 수 있다는 장점으로 선택하는 방법이라고 볼 수 있다.
+
+---
