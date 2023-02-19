@@ -10,11 +10,11 @@
 
 예를 들어 NVIDIA M40 GPU 한 대로 90 epoch 동안 'ImageNet dataset을 이용하는 ResNet-50'을 training한다고 치자. 이를 위해서는 1,018회의 single precision 연산이 필요하며 소요되는 시간은 14일이다. 이렇게 신경망 training에 2주씩 소요하는 것은 cost를 매우 낭비하는 비효율적인 방법이다. 
 
-따라서 현재는 GPU cluster를 구축해 이러만 문제를 해결한다.
+따라서 현재는 GPU cluster를 구축해 이러한 문제를 해결하고 있다.
 
 - 여러 GPU가 장착된 server
 
-- 높은 bandwidth에 latency도 ns 단위인 **Infiniband**를 사용해 server 간 통신을 진행한다.
+- 높은 bandwidth에 latency도 ns 단위로 효율적인 **Infiniband**라는 기술을 사용해 server 간 통신을 수행한다.
 
   > **RDMA**(Remote DMA)라는 통신방식을 써서, 송수신만이 아닌 상대 memory address에 직접 read/write가 가능한 방식으로 통신한다.
 
@@ -336,44 +336,231 @@ y[0:3][0:3] = x[0:3][0:3] @ w[0:3][0:3]
 
 1. data parallelism
 
-data parallelism 관점에서 parallelize할 주된 data는 input에 해당되는 `x`이다. 
+    data parallelism 관점에서 parallelize할 주된 data는 input에 해당되는 `x`이다. 
 
-모든 thread가 weight matrix인 `w`를 기본으로 갖고, `x`의 row를 thread에 분배하는 방식으로 parallelism을 구현할 수 있다.(결과로 `y`의 각 row를 얻게 된다.)
+    모든 thread가 weight matrix인 `w`를 기본으로 갖고, `x`의 row를 thread에 분배하는 방식으로 parallelism을 구현할 수 있다.(결과로 `y`의 각 row를 얻게 된다.)
 
-> 이렇게 row 단위로 나누고 합치는 과정이 hardware 관점에서 더 자연스럽고 효율적이다.
+    > 이렇게 row 단위로 나누고 합치는 과정이 hardware 관점에서 더 자연스럽고 효율적이다.
 
-```python
-# row-wise
-thread[0]: y[0][0:3] = x[0][0:3] @ w[0:3][0:3]
-thread[1]: y[1][0:3] = x[1][0:3] @ w[0:3][0:3]
-thread[2]: y[2][0:3] = x[2][0:3] @ w[0:3][0:3]
-thread[3]: y[3][0:3] = x[3][0:3] @ w[0:3][0:3]
-```
+    ```python
+    # row-wise
+    thread[0]: y[0][0:3] = x[0][0:3] @ w[0:3][0:3]
+    thread[1]: y[1][0:3] = x[1][0:3] @ w[0:3][0:3]
+    thread[2]: y[2][0:3] = x[2][0:3] @ w[0:3][0:3]
+    thread[3]: y[3][0:3] = x[3][0:3] @ w[0:3][0:3]
+    ```
 
-하지만 이 경우 다음과 같은 문제가 생길 수 있다.
+    하지만 이 경우 다음과 같은 문제가 생길 수 있다.
 
-- 모든 thread가 `w`를 가지면서 memory를 많이 차지하게 되는데, <U>model size가 한 thread에서 감당할 수 없을 정도로 크다면 parallelism이 불가능</U>하다.
+    - 모든 thread가 `w`를 가지면서 memory를 많이 차지하게 되는데, <U>model size가 한 thread에서 감당할 수 없을 정도로 크다면 parallelism이 불가능</U>하다.
 
 2. model parallelism
 
-model parallelism 관점에서 parallelize할 주된 data는 parameter(weight)에 해당되는 `w`이다.
+    model parallelism 관점에서 parallelize할 주된 data는 parameter(weight)에 해당되는 `w`이다.
 
-이 경우 동일한 input matrix `x`에 weight matrix `w`를 나눠서 분배한다. 하지만 column-wise 분배이기 때문에, 결과를 합치는 과정에서 memory cost가 더 발생하게 된다.
+    이 경우 동일한 input matrix `x`에 weight matrix `w`를 나눠서 분배한다. 하지만 column-wise 분배이기 때문에, 결과를 합치는 과정에서 memory cost가 더 발생하게 된다.
 
-```python
-# column-wise
-thread[0]: y[0:3][0] = x[0:3][0:3] @ w[0:3][0]
-thread[1]: y[0:3][1] = x[0:3][0:3] @ w[0:3][1]
-thread[2]: y[0:3][2] = x[0:3][0:3] @ w[0:3][2]
-thread[3]: y[0:3][3] = x[0:3][0:3] @ w[0:3][3]
-```
+    ```python
+    # column-wise
+    thread[0]: y[0:3][0] = x[0:3][0:3] @ w[0:3][0]
+    thread[1]: y[0:3][1] = x[0:3][0:3] @ w[0:3][1]
+    thread[2]: y[0:3][2] = x[0:3][0:3] @ w[0:3][2]
+    thread[3]: y[0:3][3] = x[0:3][0:3] @ w[0:3][3]
+    ```
 
-이런 model parallelism의 특성 때문에 <U>model size가 커지면 커질수록 parallelism도 더 커진다.</U> 
+    이런 model parallelism의 특성 때문에 <U>model size가 커지면 커질수록 parallelism도 더 커진다.</U> 
 
-또한 처리하는 input data가 많아지더라도 (모든 device에 같은 input을 전달해 주기 때문에) parallelism 자체는 변함이 없다.(늘려서 해결할 수 없다.)
+    또한 처리하는 input data가 많아지더라도 (모든 device에 같은 input을 전달해 주기 때문에) parallelism 자체는 변함이 없다.(늘려서 해결할 수 없다.)
 
-> 이러한 특징이 task parallelism과 일맥상통하는 측면이다.
+    > 이러한 특징이 task parallelism과 일맥상통하는 측면이다.
 
-> data parallelism과 같이 scalability를 높일 수는 없다는 점은 비효율적이지만, parameter가 엄청나게 많은 model을 GPU memory에 나눠서 올릴 수 있다는 장점으로 선택하는 방법이라고 볼 수 있다.
+data parallelism과 같이 scalability를 높일 수는 없다는 점은 비효율적이지만, parameter가 엄청나게 많은 model을 GPU memory에 나눠서 올릴 수 있다는 장점으로 선택하는 방법이라고 볼 수 있다.(물론 이 둘을 함께 사용하는 **pipeline parallelism**을 이용할 수 있다.)
+
+> 하지만 model parallelism에서는 synchronization(동기화), communication overhead(통신 비용) 등의 문제로 여러 한계점을 갖는 경우가 많다.
+
+앞서 설명한 것처럼 GPT-3는 parameter 수가 1,746억 개에 달한다. training에 필요한 계산량만 314,000,000 PFLOP으로, 이는 DGX-A100 한 대의 학습 이론 성능(5 PFLOPS)를 100% 발휘해도 2년이 걸리는 수준이다.
+
+심지어 pre-trained GPT-3 model을 사용해 inference를 하더라도 350GB 이상의 memory가 필요하다.(당연히 training은 이보다 몇 배 더 필요하다.) 하지만 GPU memory size는 많아야 10~40GB 정도이므로, model parallelism이 꼭 필요한 것이다.
+
+> Microsoft Azure에서는 OpenAI를 위해, 계산용 GPU 10,000대에 server당 400Gbps 고속 network로 연결하여 GPT-3를 학습시켰다.
+
+---
+
+### 4.5.6 cluster 구성
+
+딥러닝 cluster는 training을 최대한 빠르게 수행하도록 설계된다. 이 말은 즉, bottleneck이 발생하지 않도록 hardware부터 software까지 모두 최적화를 진행한다는 의미이다.
+
+GPU server를 나타내는 지표는 다양하게 있다.
+
+1. FLOPS
+
+    GPU가 1초에 수행할 수 있는 floating-point 연산 수를 나타낸다. GPU는 floating-point 연산을 처리하는 core가 수천 개 있어서 동시에 수 많은 연산을 처리한다.
+
+    참고로 **precision**(정밀도) 기준에 따라 FLOPS 값이 달라질 수 있다. 보통 FP32(=SP) 성능이 FP64(=DP) 성능의 두 배 정도이다. 또한 FP16(=HP) 성능은 FP32(=SP) 성능의 2배 이상이다.
+
+    > 과학 분야의 연산이 아니라면 높은 precision을 필요로 하지 않는다. 특히 inference 과정에서는 FP16로도 충분하기 때문에 FP16을 사용하는 경우가 많다.
+
+2. memory capacity, bandwidth
+
+    memory **capacity**(메모리 용량)은 GPU가 한 번에 처리할 수 있는 batch size(data parallelism)나 model size(model parallelism)와 밀접하게 관련이 있다.
+
+    > 이와 별개로 system memory capacity도 커야 한다. batch나 model 모두 system memory에서 각 GPU로 전달되는 것이기 때문이다.
+
+    **bandwidth**(대역폭)는 GPU가 memory를 읽고 쓰는 속도와 관련이 있다. bandwidth가 크다고 해서 access 속도가 반드시 빨라지지는 않지만, 넓은 memory space를 동시에 읽고 쓰기 때문에 총 시간이 감소하는 것이 보통이다.
+
+
+- Activation, Pooling, Normalization과 같이 memory access 횟수 대비 연산이 적은 layer를 보통 **memory-bound**라고 지칭한다.
+
+  > 따라서 bandwidth에 의해 performance 상한이 결정된다.
+
+- Convolution, Dense와 같이 memory access에 비해 연산이 많은 layer는 보통 **compute-bound**라고 지칭한다.
+
+  > 따라서 FLOPS에 의해 performance 상한이 결정된다.
+
+3. Interconnect
+
+    CPU가 관리하는 system memory와 GPU memory는 물리적으로 분리되어 있다.
+
+    - 저장된 dataset으로 train하기 위해서는 system memory에 있는 batch를 GPU memory로 전송해야 한다.
+
+    - GPU에서 train이 끝난 model parameter를 저장하기 위해서는, GPU memory에 있는 parameter를 system memory로 전송해야 한다.
+
+    이외 다른 GPU에 할당된 batch로 계산한 gradient를 합치는 경우나, model parallelism으로 model을 쪼갠 경우는 GPU끼리 통신이 필요할 수 있다.
+
+    같은 server에 장착된 GPU끼리는 PCIe(PCI Express)와 같은 인터페이스를 통해 통신할 수 있다. PCIe는 여러 lane으로 구성되며, PCIe 4.0은 lane 당 약 2GB/s의 bandwidth로 양방향 통신이 가능하다.
+
+    > 보통 GPU는 16 lane 너비(x16)을 지원한다.
+
+    > 예를 들어 CPU가 지원하는 PCIe lane이 16개가 있다면, GPU 한 개를 연결했을 때는 16개가 전부 분배되며, 두 개를 연결하면 각각 8개씩, 3개라면 첫 번째 GPU 8개/두,세 번째 GPU에 각각 4개씩 분배된다.
+
+    2020년대 서버급 Intel CPU에서는 socket당 48 lane을 지원했다. 일반적으로 사용하는 2 socket 구성이라면 48*2 = 96 lane이 사용 가능한 것이다. 따라서 GPU와 HCA(Host Channel Adapter. 고속 네트워크 카드)를 포함해 최대 6개까지만 제 성능을 낼 수 있다.
+
+    > 최신 CPU는 socket당 더 많은 lane을 지원한다.
+
+    NVIDIA에서는 PCIe와 별개로 NVIDIA GPU 간 고속 통신을 위해 NVLink 기술을 제공한다. PCIe 4.0보다 훨씬 넓은 bandwidth로 양방향 통신이 가능지만, 지원을 해주는 일부 메인보드에서만 사용이 가능하다.
+
+하지만 GPU cluster는 다른 server에 장착된 GPU 간에 데이터 통신도 필요하다. 
+
+이를 위해 각 server에는 **HCA**가 설치되어 있어야 한다. HCA는 server의 memory subsystem과는 별개의 PCIe로, 다른 server의 HCA와 고속 **network switch**와 특수 cable로 연결되어 있다.
+
+> network switch는 bridging hub, MAC bridge, switching hub, port switching hub 등으로도 불린다. switch는 각 장치의 MAC 주소를 저장하고 있어서, MAC 주소를 통해 어디로 data를 보낼지 결정한다.
+
+> data를 필요로 하는 장치에만 data가 전송되기 때문에 bottleneck을 방지할 수 있다. 또한 **full duplex** 통신 방식(각각 독립된 회선)을 지원하기 때문에, 송신과 수신이 동시에 일어나는 경우 훨씬 향상된 속도를 제공한다.
+
+이 switch는 또 다른 switch와 연결되며 cluster의 내부망을 구성하게 된다. 이제 다른 server 사이를 연결하는 기술을 알아보자.
+
+1. RDMA
+
+    수많은 server가 data를 교환할 때마다 CPU, cache, OS page를 거치게 되면 엄청난 bottleneck이 발생할 것이다.
+    
+    > 다른 server의 GPU와 GPU 사이 통신마다 이런 bottleneck이 발생하면 효율이 굉장히 나빠진다.
+
+    이를 방지하기 위해 **RDMA(Remote Direct Memory Access)** 기술이 등장했다. RDMA를 통해 OS의 간섭 없이(CPU는 다른 작업을 수행한다.) 곧바로 HCA를 통해 다른 server로 보내거나, 혹은 HCA를 통해 받은 data를 바로 device로 보낼 수도 있다.
+
+    RDMA를 실현하는 대표적인 기술로 Mellanox의 **Infiniband**가 있고, 범용으로 사용되는 Ethernet 프로토콜을 이용한 RoCE(RDMA over Converged Ethernet)가 있다.
+
+2. Nonblocking Minimal Spanning Switch
+
+    **Nonblocking Minimal Spanning Switch**은 다음과 같은 구조를 뜻한다.
+
+    ![Nonblocking Minimal Spanning Switch](images/nonblocking_minimal_spanning_switch.png)
+
+    - network를 구성하는 각 switch에 연결된 uplink 수가 downlink 수와 1:1로 동일하다.(따라서 어느 상황이든 두 device끼리 통신이 가능하다.)
+
+    - 이를 만족하면서 network를 구성하는 switch의 개수가 최소이다.
+
+    이러한 nonblocking 구성을 만족하지 못하면, 모든 device가 다른 device와 통신하는 **collective communication** 패턴에서 항상 bottleneck이 발생하게 된다.
+
+    > distributed learning의 AllReduce나 AllGather 연산이 collective communication에 해당된다.
+
+---
+
+### 4.6.7 ASIC, FPGA
+
+training latency를 줄이기 위해 기본 hardware를 강화하는 방식을 사용할 수도 있다. 
+
+- **ASIC**(Application-Specific Intergrated Circuits)가 대표적이 예로, ASIC은 training에서 쓰이는 대형 matrix 연산 성능을 최적화하도록 특별히 설계된 hardware이다.
+
+  Google에서 맞춤 제작한(Google Cloud에서 제공) ASIC인 **TPU**(Tensor Processing Unit)는 vector/matrix 연산에 특화되어 있다.
+
+- 이와 달리 Microsoft Azure는 재구성이 가능한 커스텀 칩인 **FPGA**(Field Programmable Gate Array)를 제공한다. 
+
+ASIC이 프로그래밍이 불가능한 양산형 집적회로인 반면(성능, 전력소모, 가격 모두 더 뛰어나다.), FPGA는 모든 용도로 활용이 가능한 logic block이 담긴 집적회로이다. 따라서 FPGA는 ASIC보다 더 많은 용도로 사용할 수 있지만, 성능, 전력소모, 가격 면에서 모두 뒤떨어진다.
+
+GPU를 이용한 training에서 2주가 걸리는 model을 TPU를 이용하면 몇 시간 이내 수렴할 수도 있다. 그런데 이처럼 **accelerator**(GPU, FPGA, TPU 등의 가속기)가 빨라지면 I/O가 training에서 bottleneck을 심각하게 발생시킬 수 있다.
+
+- training process의 대부분에서 data를 읽고, 이를 accelerator에 copy하고, AllReduce를 통한 gradient update를 기다리는 시간에서 많은 시간이 낭비된다.
+
+이러한 해결책으로 TPU pod(수 천개의 TPU 그룹)에는 고속 상호 연결이 존재한다. pod 내에서는 통신으로 드는 비용과 시간이 매우 적고, 사용 가능한 disk memory도 많아서 CPU 호출 빈도도 줄일 수 있다.
+
+distributed learning 관점에서는 `TPUStrategy`를 사용하면 TPU를 이용한 training을 실행할 수 있다. TPU가 자체적으로 AllReduce algorithm을 구현하지만, 내부적으로는 `MirroredStrategy`와 동일하다.
+
+> TPU는 Google Colaborataory에서도 사용할 수 있다.
+
+---
+
+### 4.6.8 다른 고려할 요소
+
+1. batch size
+
+    synchronize data parallelism에서 model size가 크다면, **batch size**는 매우 중요하게 고려할 요소가 된다.
+
+    각 단계마다 worker 모두가 update된 model을 공유해야 하므로, batch size를 가능한 크게 해서 통신 비용을 줄이는 편이 좋다.
+
+    하지만 batch size가 너무 커도 안 된다. batch size가 커지면 gradient의 variance가 커지고, 이는 gradient descent의 수렴 속도를 늦춘다.
+
+    아래 그림을 보면 batch size를 너무 크게 설정했을 때 top-1 validation error가 더 커지는 것을 확인할 수 있다.
+
+    ![batch size & error rate](images/batch_size_error_rate.png)
+
+    > 따라서 batch size에 맞춰 learning rate를 조절해 주기도 한다.
+
+    > LAMB라는 계층별 적응형 대규모 batch optimization algorithm이 있다. 이는 batch size가 커지면 learning rate를 줄이는 방식으로 gradient variance를 줄이는 방식이다.
+
+2. I/O 대기 최소화
+
+    앞서 언급한 것처럼 I/O pipeline이 accelerator의 속도를 따라잡기 어려워 bottleneck이 발생할 수 있다. 이러한 bottleneck을 해결하기 위해 input pipeline을 최적화하는 방법이 중요한 과제로 떠올랐다.
+
+    다음은 TensorFlow에서 적용할 수 있는 예시 두 가지다.
+
+    - TFRecords와 같이 최적화된 파일 형식을 사용한다.
+
+    - TF의 `tf.data` API를 사용해서 data pipeline을 자체적으로 구축한다.
+
+    `tf.data` API는 대량의 data 처리가 가능하며 효율적인 pipeline의 구성이 가능하다. 예를 들어 `tf.data.Dataset.prefecth`는 training 단계의 전처리와 model 실행 작업을 parallel하게 수행할 수 있도록 한다.
+
+    원래라면 CPU가 input pipeline, 즉 storage에서 data를 읽고, 전처리하고, accelerator에 전달한다. 
+
+    ![input pipeline 1](images/input_pipeline_1.png)
+
+    하지만 전처리, 모델 실행 과정을 parallel하게 수행하도록 하면, input pipeline이 쉬지 않고 다음 단계를 위한 준비를 수행하게 된다.
+
+    ![input pipeline 2](images/input_pipeline_2.png)
+
+3. **pipeline parallelism**
+
+    한 worker에 load하기 너무 큰 model은, model parallelism을 적용해서 model을 여러 worker에 나눠서 넣게 된다. 
+    
+    그런데 만약 sequential model을 naive하게 training한다면, 아래와 같이 한 번에 하나의 GPU만 활성화되며 GPU idle이 발생할 것이다.
+
+    ![sequential layers partitioned four accelerator](images/sequential_layer_partitioned_4.png)
+
+    - sequential layer들을 accelerator 4개에 partitioning해서 넣는다.
+
+    - $F_{k}$ : $k$ 번째 partition의 forward computation.
+
+    - $B_{k}$ : $k$ 번째 partition의 backpropagation.
+
+    여기서 중요한 point로 backpropagation의 특성상 $B_{k}$ 는 $B_{k+1}$ 과 $F_{k}$ 가 존재해야만 연산이 가능하다. 따라서 training은 다음과 같은 순서로 진행된다.
+
+    ![naive training](images/naive_training.png)
+
+    - backpropagation 연산을 진행하기까지 **bubble**이 발생한다.
+
+    여기서 Gpipe(2018) 논문은 batch를 **micro-batch**라는 단위로 쪼개서 처리하면서 GPU idle을 최대한 줄이는 방법을 제안했다.
+
+    ![Gpipe](images/Gpipe.png)
+
+    > 이상적으로는 약 2배 가량 시간이 줄어들게 된다. 하지만 여전히 bubble은 존재한다.
 
 ---

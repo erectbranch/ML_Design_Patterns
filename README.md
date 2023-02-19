@@ -20,6 +20,24 @@
 
   > 임베딩, 체크포인트, 하이퍼파라미터 튜닝 등 다양한 머신 러닝 기술을 익히기
 
+</br>
+
+## 🚩 정리한 문서 목록
+
+### 📖 model training design pattern
+
+- [distribution strategy](https://github.com/erectbranch/ML_Design_Patterns/tree/master/ch04/summary02)
+
+  > Data Parallelism(DP): synchronous training, asynchronous training, AllReduce, Ring-AllReduce
+  
+  > synchronous training with TensorFlow/PyTorch(rank, world)
+
+  > Task Parallelism(TP), Model Parallelism, Pipeline Parallelism(PP)
+
+  > cluster: FLOPS, capacity/bandwidth(memory-bound/compute-bound), interconnect(lane, PCIe, NVLink, HCA, network switch), RDMA, Nonblocking Minimal Spanning Switch
+
+  > ASIC(TPU), FPGA
+
 <br/>
 
 ## :mag: 목차
