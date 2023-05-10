@@ -26,9 +26,9 @@
 
 이를 위해서 training loop에 distribution strategy를 사용한다. 여러가지 방식이 있지만 모두 공통적으로 training에 필요한 계산을 여러 machine에 분산시킨다. 
 
-distribution strategy는 작업을 분할하는 방식에 따라 크게 두 가지 종류로 나눌 수 있다.
+distribution strategy는 작업을 분할하는 방식에 따라 크게 세 가지 종류로 나눌 수 있다.
 
-![parallelism](images/parallelism.png)
+![parallelisms](images/parallelisms.png)
 
 - **data parallelism**
 
@@ -37,6 +37,10 @@ distribution strategy는 작업을 분할하는 방식에 따라 크게 두 가�
 - **model parallelism**
 
     model을 distribute해서 서로 다른 worker가 model의 다른 부분을 각각 training한다.
+
+    - layer-wise(pipeline parallel)
+
+    - tensor slicing
 
 data parallelism은 GPU에서 for loop를 thread에 각각 배정해서 parallel하게 연산을 수행하는 것을 떠올리면 쉽다.
 
@@ -69,7 +73,9 @@ thread[2]: a[2] += b[2]
 
 ---
 
-#### 4.5.2 data parallelism: synchronous training
+### 4.5.2 data parallelism: synchronous training
+
+> [NCCL collective operations](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/operations.html)
 
 우선 data parallelism(DP)에서 **synchronous training**(동기식 학습)을 살펴보자. 
 
@@ -83,7 +89,7 @@ thread[2]: a[2] += b[2]
 
 > 하지만 synchronous training은 모든 worker(GPU)의 job이 끝날 때까지 대기해야 하므로, worker가 많을수록 asynchronous training이 효율적이다.
 
-이때 쓰이는 algorithm이 바로 **Allreduce** algorithm이다. 아래가 간단히 Allreduce를 구현한 코드이다.
+이때 쓰이는 algorithm이 바로 **Allreduce** algorithm이다. 아래는 간단히 Allreduce logic를 구현한 코드이다.
 
 - id는 각 GPU마다 갖는 구별된 id를 의미한다.
 
@@ -101,13 +107,14 @@ def AllReduce(id, data_send: List[T]) -> List[T]:
 
 코드를 보면 알 수 있듯이 모든 GPU에서 계산된 gradient를, <U>한 GPU에 모아서 합산</U>하기 때문에 이 통신 과정에서 **bottleneck**이 발생할 수 있다. 
 
-따라서 더 효율적으로 통신하는 algorithm으로 보통 **Ring-Allreduce** algorithm을 사용한다. 다음과 같이 GPU 0 ~ GPU 3까지 총 4대의 GPU가 각각 gradient를 계산한다고 하자.
+따라서 더 효율적으로 통신하는 algorithm으로 보통 **Ring-Allreduce** algorithm을 사용한다.
+ 다음과 같이 GPU 0 ~ GPU 3까지 총 4대의 GPU가 각각 gradient를 계산한다고 하자.
 
 - GPU0에서 계산된 gradient는 $a_0, b_0, c_0, d_0$ , GPU1에서 계산된 gradient는 $a_1, b_1, c_1, d_1$ 식으로 표기했다.
 
 ![Ring-AllReduce ex 1](images/Ring-Allreduce_ex_1.png)
 
-1. GPU 각자가 계산한 gradient를 다음과 같이 GPU를 순환하면서 parameter 일부를 보낸다.(**scatter-reduce**)
+1. GPU 각자가 계산한 gradient를 다음과 같이 GPU를 순환하면서 parameter 일부를 보낸다.
 
 ![Ring-AllReduce ex 2](images/Ring-Allreduce_ex_2.png)
 
@@ -115,7 +122,7 @@ def AllReduce(id, data_send: List[T]) -> List[T]:
 
 ![Ring-AllReduce ex 4](images/Ring-Allreduce_ex_4.png)
 
-2. 이렇게 한 차례 완성된 parameter는 다시 ring처럼 순환하며 공유된다.(**AllGather**)
+2. 이렇게 한 차례 완성된 parameter는 다시 ring처럼 순환하며 공유된다.
 
 ![Ring-AllReduce ex 5](images/Ring-Allreduce_ex_5.png)
 
